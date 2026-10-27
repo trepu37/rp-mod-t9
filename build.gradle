@@ -1,0 +1,99 @@
+plugins {
+    id 'fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    // Fabric / Mojang / Maven Central подключаются Loom автоматически.
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+    it.options.encoding = "UTF-8"
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+// ---------------------------------------------------------------------------
+// Словарь для Т9 по словам: при сборке скачивается открытый частотный список
+// русских слов (FrequencyWords by Hermit Dave, CC-BY-SA 4.0, данные OpenSubtitles)
+// и сохраняется в мод как words_ru.txt (до 100 000 самых частых слов).
+// Если интернета нет - сборка всё равно проходит, просто без большого словаря.
+// ---------------------------------------------------------------------------
+def wordsDir = layout.buildDirectory.dir("generated/words").get().asFile
+
+tasks.register('prepareWords') {
+    outputs.dir(wordsDir)
+    // если словарь не скачался в прошлый раз - попробовать снова
+    outputs.upToDateWhen { new File(wordsDir, "assets/rpautocomplete/words_ru.txt").exists() }
+    doLast {
+        def target = new File(wordsDir, "assets/rpautocomplete")
+        target.mkdirs()
+        def outFile = new File(target, "words_ru.txt")
+        try {
+            def src = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/ru/ru_full.txt"
+            def firstLetter = (char) 0x430
+            def lastLetter = (char) 0x44f
+            def yoLetter = (char) 0x451
+            def letters = java.util.regex.Pattern.compile("[" + firstLetter + "-" + lastLetter + yoLetter + "]+")
+            def triple = java.util.regex.Pattern.compile("(.)\\1\\1")
+            def conn = new URL(src).openConnection()
+            conn.setConnectTimeout(20000)
+            conn.setReadTimeout(60000)
+            def seen = new HashSet<String>()
+            def sb = new StringBuilder()
+            int count = 0
+            def reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"))
+            try {
+                String line
+                while (count < 100000 && (line = reader.readLine()) != null) {
+                    int sp = line.indexOf(' ')
+                    if (sp <= 0) continue
+                    String w = line.substring(0, sp).toLowerCase()
+                    if (w.length() < 2 || w.length() > 25) continue
+                    if (!letters.matcher(w).matches()) continue
+                    if (triple.matcher(w).find()) continue
+                    if (!seen.add(w)) continue
+                    sb.append(w).append('\n')
+                    count++
+                }
+            } finally {
+                reader.close()
+            }
+            if (count >= 1000) {
+                outFile.setText(sb.toString(), "UTF-8")
+                println("prepareWords: saved " + count + " words")
+            } else {
+                println("prepareWords: WARNING word list too short (" + count + "), skipped")
+            }
+        } catch (Exception e) {
+            println("prepareWords: WARNING could not download word list: " + e.getMessage())
+        }
+    }
+}
+
+sourceSets.main.output.dir([builtBy: 'prepareWords'], wordsDir)
